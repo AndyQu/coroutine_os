@@ -16,7 +16,6 @@ class Task:
         self.value = None
         self.pid = Task.id
         self.waiting_tasks=[]
-        self.is_alive=True
 
         print "new task",self.pid
         Task.id += 1
@@ -66,7 +65,7 @@ class WaitTask(SystemCall):
         self.waited_task_id=waited_task_id
 
     def handle(self):
-        self.task.waiting_tasks=[self.waited_task_id]
+        self.scheduler.wait(self.task, self.waited_task_id)
 
 @coroutine
 def tick():
@@ -89,34 +88,57 @@ def tock():
 def forker():
     yield
     sub_task_id=yield NewTask(tick())
-    print "create a new task, wait it to finish",sub_task_id
+    print "created a new task, wait it to finish",sub_task_id
     yield WaitTask(sub_task_id)
-    print "waited sub task finished",sub_task_id
+    print "the waited sub task finished",sub_task_id
     # yield
     # yield KillTask(sub_task_id)
     # print "killed my sub task",sub_task_id
 
 class Scheduler:
     def __init__(self):
-        self.task_list=[]
+        self.ready_tasks=[]
+        self.killed_tasks={}
+        self.finished_tasks={}
+        self.read_wait_tasks=[]
+        self.write_wait_tasks=[]
+        self.wait_other_tasks={}
         self.task_map={}
 
     def has_tasks(self):
-        return len(self.task_list)>0
+        return len(self.ready_tasks)>0
 
     def fetch(self):
-        return self.task_list.pop(0)
+        return self.ready_tasks.pop(0)
 
     def schedule(self, task):
-        self.task_list.append(task)
+        self.ready_tasks.append(task)
         self.task_map[task.pid]=task
 
+    def wait(self,waiting_task,waited_task_id):
+        self.wait_other_tasks[waited_task_id]=self.wait_other_tasks.get(waited_task_id,[])
+        self.wait_other_tasks[waited_task_id].append(waiting_task)
+        self.ready_tasks.remove(waiting_task)
+
     def kill(self, task_id):
-        for task in self.task_list:
-            if task.pid==task_id:
-                self.task_list.remove(task)
-                task.is_alive=False
-                print "[scheduler] remove task ", task_id
+        task=self.task_map[task_id]
+        self.ready_tasks.remove(task)
+        self.killed_tasks[task_id]= task
+        if task is not None:
+            print "[scheduler] remove task ", task_id
+
+    def stop(self,task):
+        try:
+            self.ready_tasks.remove(task)
+        except ValueError as e:
+            pass
+        print "task [{}] ended".format(task.pid)
+        self.finished_tasks[task.pid]=task
+
+
+    def schedule_waiting_tasks(self,task):
+        for waiting_task in self.wait_other_tasks.get(task.pid,[]):
+            self.schedule(waiting_task)
 
     def loop(self):
         while True:
@@ -129,28 +151,18 @@ class Scheduler:
     def run_once(self):
         try:
             task = self.fetch()
-            if self.has_waiting_task(task):
-                self.schedule(task)
-                return
             request = task.resume()
+            self.schedule(task)
             if isinstance(request, SystemCall):
                 request.task = task
                 request.scheduler=self
                 request.handle()
-            self.schedule(task)
         except StopIteration as e:
-            task.is_alive=False
-            print "task [{}] ended".format(task.pid)
+            self.stop(task)
+            self.schedule_waiting_tasks(task)
 
     def has_waiting_task(self, task):
-        if len(task.waiting_tasks)>0:
-            for id in task.waiting_tasks:
-                if self.task_map[id].is_alive:
-                    return True
-            return False
-        else:
-            return False
-
+        pass
 
 if __name__ == "__main__":
     scheduler = Scheduler()
